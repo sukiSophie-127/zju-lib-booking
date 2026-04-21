@@ -18,7 +18,7 @@ on:
 
       # (保持原有) 预约模式参数 (对应 main.py 的第4个参数 sys.argv[3])
       scope_mode:
-        description: '预约模式 (0=仅二层, 1=全部)'
+        description: '预约模式 (0=仅二层排除指定座位, 1=仅二层含指定座位, 2=全部区域)'
         required: false
         default: '0'
         type: string

@@ -818,8 +818,63 @@ AREA_PRIORITY_LIST = [
     "五层东"
 ]
 
-# --- [模式 0 - 仅二层] ---
+# 排除的座位范围（二层北）(格式: start-end)
+EXCLUDED_SEATS_2F = [
+    (105, 108),
+    (115, 118),
+    (125, 132),
+    (139, 146),
+    (153, 160),
+    (167, 174),
+    (181, 189),
+    (195, 202),
+]
+
+# 优先选择的座位（二层北）(格式: start-end)
+PREFERRED_SEATS_2F = [
+    (105, 108),
+    (115, 118),
+    (125, 132),
+    (139, 146),
+    (153, 160),
+    (167, 174),
+    (181, 189),
+    (195, 202),
+]
+
+def is_seat_excluded(seat_no: str) -> bool:
+    """判断座位是否在排除列表中"""
+    if not seat_no or not seat_no.startswith("z2f"):
+        return False
+    try:
+        seat_num = int(seat_no[3:])
+        for start, end in EXCLUDED_SEATS_2F:
+            if start <= seat_num <= end:
+                return True
+        return False
+    except (ValueError, IndexError):
+        return False
+
+def is_seat_preferred(seat_no: str) -> bool:
+    """判断座位是否在优先列表中"""
+    if not seat_no or not seat_no.startswith("z2f"):
+        return False
+    try:
+        seat_num = int(seat_no[3:])
+        for start, end in PREFERRED_SEATS_2F:
+            if start <= seat_num <= end:
+                return True
+        return False
+    except (ValueError, IndexError):
+        return False
+
+# --- [模式 0 - 仅二层，排除指定座位] ---
 LIMITED_PRIORITY_LIST = [
+    "二层南", "二层北",
+]
+
+# --- [模式 1 - 仅二层包含指定座位] ---
+LIMITED_WITH_PREFERRED_LIST = [
     "二层南", "二层北",
 ]
 
@@ -879,11 +934,15 @@ async def run_booking_logic(studentid: str, password: str, refresh_time: float, 
     area_filter_name: str
 
     if scope_mode == 0:
-        logger.info("--- 运行模式: [0] 仅监控二层北/二层南 ---")
+        logger.info("--- 运行模式: [0] 仅监控二层，排除指定座位 ---")
         active_priority_list = LIMITED_PRIORITY_LIST
-        area_filter_name = "(主馆-仅二层)"
+        area_filter_name = "(主馆-仅二层-排除指定座位)"
+    elif scope_mode == 1:
+        logger.info("--- 运行模式: [1] 仅二层，包含指定座位 ---")
+        active_priority_list = LIMITED_WITH_PREFERRED_LIST
+        area_filter_name = "(主馆-仅二层-含指定座位)"
     else:
-        logger.info("--- 运行模式: [1] 监控主馆所有区域 ---")
+        logger.info("--- 运行模式: [2] 全部区域，二层到五层 ---")
         active_priority_list = AREA_PRIORITY_LIST
         area_filter_name = "(主馆-全部)"
 
@@ -930,7 +989,12 @@ async def run_booking_logic(studentid: str, password: str, refresh_time: float, 
                     # 3.2 获取所有(目标范围的)有空座位的区域
                     # 注意：这里我们传入BUILD_ID_MAP作为segment_map参数，因为get_all_available_areas函数需要它来过滤区域
                     # Use filtered build_id_map based on scope_mode
-                    area_filter_map = BUILD_ID_MAP if scope_mode == 1 else {k: v for k, v in BUILD_ID_MAP.items() if k in LIMITED_PRIORITY_LIST}
+                    if scope_mode == 2:
+                        area_filter_map = BUILD_ID_MAP
+                    elif scope_mode == 1:
+                        area_filter_map = {k: v for k, v in BUILD_ID_MAP.items() if k in LIMITED_WITH_PREFERRED_LIST}
+                    else:
+                        area_filter_map = {k: v for k, v in BUILD_ID_MAP.items() if k in LIMITED_PRIORITY_LIST}
                     available_areas = await get_all_available_areas(api, today_str, area_filter_map)
 
                     # [修改点] 检查是否发生致命错误 (Session 失效)
@@ -985,12 +1049,36 @@ async def run_booking_logic(studentid: str, password: str, refresh_time: float, 
                         if not all_seats:
                             continue
 
-                        # 3.6 查找第一个空闲座位
+                        # 3.6 根据模式查找空闲座位
                         target_seat = None
+                        preferred_seats = []
+                        other_seats = []
+
                         for seat in all_seats:
-                            if seat.get('status') == '1': # '1' = 空闲
-                                target_seat = seat
-                                break
+                            if seat.get('status') != '1':
+                                continue
+                            seat_no = seat.get('no', '')
+                            if scope_mode == 0:
+                                # 模式0: 排除指定座位
+                                if is_seat_excluded(seat_no):
+                                    other_seats.append(seat)
+                                else:
+                                    preferred_seats.append(seat)
+                            elif scope_mode == 1:
+                                # 模式1: 仅二层，包含指定座位 (优先指定座位)
+                                if is_seat_preferred(seat_no):
+                                    preferred_seats.append(seat)
+                                else:
+                                    other_seats.append(seat)
+                            else:
+                                # 模式2: 全部区域
+                                preferred_seats.append(seat)
+
+                        # 优先选择目标座位，没有则选择其他空闲座位
+                        if preferred_seats:
+                            target_seat = preferred_seats[0]
+                        elif other_seats:
+                            target_seat = other_seats[0]
 
                         # 3.7 找到空位，发起预约
                         if not target_seat:
@@ -1033,8 +1121,8 @@ def main():
     if len(sys.argv) < 3 or len(sys.argv) > 5:
         print("错误: 参数不足。")
         # [修改] 更新帮助文本
-        print("用法: python3 main.py <学号> <密码> [模式, 0=仅二层, 1=全部, 默认0] [刷新间隔秒数, 默认1.0]")
-        logger.error("用法: python3 main.py <学号> <密码> [模式, 0=仅二层, 1=全部, 默认0] [刷新间隔秒数, 默认1.0]")
+        print("用法: python3 main.py <学号> <密码> [模式, 0=仅二层排除指定座位, 1=仅二层含指定座位, 2=全部区域, 默认0] [刷新间隔秒数, 默认1.0]")
+        logger.error("用法: python3 main.py <学号> <密码> [模式, 0=仅二层排除指定座位, 1=仅二层含指定座位, 2=全部区域, 默认0] [刷新间隔秒数, 默认1.0]")
         sys.exit(1)
 
     studentid = sys.argv[1]
@@ -1048,11 +1136,11 @@ def main():
     if len(sys.argv) >= 4:
         try:
             scope_mode = int(sys.argv[3]) # <--- [修正] 模式现在是 argv[3]
-            if scope_mode not in [0, 1]:
-                logger.warning(f"模式 (第4个参数 '{sys.argv[3]}') 必须是 0 或 1，已重置为 0。")
+            if scope_mode not in [0, 1, 2]:
+                logger.warning(f"模式 (第4个参数 '{sys.argv[3]}') 必须是 0、1 或 2，已重置为 0。")
                 scope_mode = 0
         except ValueError:
-            logger.error(f"错误: 模式 (第4个参数 '{sys.argv[3]}') 必须是一个数字 (0 或 1)。")
+            logger.error(f"错误: 模式 (第4个参数 '{sys.argv[3]}') 必须是一个数字 (0、1 或 2)。")
             sys.exit(1)
 
     # [修改] 解析第 5 个参数 (刷新时间, sys.argv[4])
@@ -1068,7 +1156,8 @@ def main():
     
     logger.info(f"--- 启动预约程序 ---")
     logger.info(f"  刷新间隔: {refresh_time} 秒")
-    logger.info(f"  预约模式: {scope_mode} ({'仅二层' if scope_mode == 0 else '全部区域'})")
+    mode_desc = {0: "仅二层排除指定座位", 1: "仅二层含指定座位", 2: "全部区域"}
+    logger.info(f"  预约模式: {scope_mode} ({mode_desc.get(scope_mode, '未知')})")
     
     try:
         # 启动主业务逻辑
