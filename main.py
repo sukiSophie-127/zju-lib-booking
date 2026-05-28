@@ -1061,9 +1061,8 @@ async def run_booking_logic(studentid: str, password: str, refresh_time: float, 
                             if scope_mode == 0:
                                 # 模式0: 排除指定座位
                                 if is_seat_excluded(seat_no):
-                                    other_seats.append(seat)
-                                else:
-                                    preferred_seats.append(seat)
+                                    continue
+                                preferred_seats.append(seat)
                             elif scope_mode == 1:
                                 # 模式1: 仅二层，包含指定座位 (优先指定座位)
                                 if is_seat_preferred(seat_no):
